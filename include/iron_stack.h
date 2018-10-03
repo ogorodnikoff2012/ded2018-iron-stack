@@ -285,8 +285,12 @@ class PointerManager {
         ExternalVerificator external_verificator_;
 };
 
+struct StackBase {
+    static PointerManager pointer_manager_;
+};
+
 template <class T>
-class IronStack {
+class IronStack : public StackBase {
 public:
     static constexpr int kCanarySize = 16;
 //    static constexpr int kPoisonValue = 0xFEE1DEAD;
@@ -504,13 +508,10 @@ private:
         external_verificator_.SetObject("capacity", capacity_);
     }
 
-    void EverythingIsBad(const char* msg = nullptr) const {
+    void EverythingIsBad(const char* msg) const {
         std::FILE* dump = GetDumpFile();
         if (dump != nullptr) {
-            if (msg != nullptr) {
-                std::fprintf(dump, "ERROR: %s\n", msg);
-            }
-            Dump(dump);
+            std::fprintf(dump, "IronStack construction ERROR: %s\n", msg);
         }
         std::exit(1);
     }
@@ -518,7 +519,7 @@ private:
     template <class This>
     void AssertIsValid(This pointer) const {
         if (!IsAValidPointer(pointer)) {
-            EverythingIsBad();
+            EverythingIsBad("Pointer is not valid");
         }
     }
 
@@ -596,8 +597,6 @@ private:
     uint32_t hash_sum_;
     uint32_t buffer_hash_sum_;
     Canary canary_footer_;
-    static PointerManager pointer_manager_;
 };
 
-template <class T>
-PointerManager IronStack<T>::pointer_manager_;
+PointerManager StackBase::pointer_manager_;

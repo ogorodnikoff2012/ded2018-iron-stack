@@ -8,7 +8,7 @@ int main() {
         stack.Push(i);
     }
 
-    new (&stack) IronStack<int>;
+    new (&stack) IronStack<double>;
     stack.Push(0);
 
     for (int i = 99; i >= 0; --i) {
