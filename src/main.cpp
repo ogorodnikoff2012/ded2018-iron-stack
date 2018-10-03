@@ -8,9 +8,8 @@ int main() {
         stack.Push(i);
     }
 
-    IronStack<int> other;
-    other.Push(0);
-    memcpy(&stack, &other, sizeof(other));
+    new (&stack) IronStack<int>;
+    stack.Push(0);
 
     for (int i = 99; i >= 0; --i) {
         assert(stack.Top() == i);

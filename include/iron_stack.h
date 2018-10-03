@@ -10,6 +10,8 @@
 #include <sys/wait.h>
 #include <iostream>
 #include <cstring>
+#include <vector>
+#include <algorithm>
 
 #include "murmur3.h"
 
@@ -79,6 +81,7 @@ static std::FILE* GetDumpFile() {
 
 #define EVERYTHING_IS_BAD(message) \
     external_verificator_.Damage(); \
+    pointer_manager_.Damage(); \
     FILE* f = GetDumpFile(); \
     std::fprintf(f, "Error in %s (%s:%d), validator message: %s\n", __PRETTY_FUNCTION__, __FILE__, __LINE__, message); \
     Dump(f); \
@@ -92,9 +95,9 @@ static std::FILE* GetDumpFile() {
     } \
 }
 
-class ExternalStackVerificator {
+class ExternalVerificator {
     public:
-        ExternalStackVerificator() {
+        ExternalVerificator() {
 #if PARANOIA_LEVEL >= 3
             int to_pipe[2], from_pipe[2];
             if (pipe(to_pipe) == -1) {
@@ -204,7 +207,7 @@ class ExternalStackVerificator {
 #endif
         }
 
-        ~ExternalStackVerificator() {
+        ~ExternalVerificator() {
 #if PARANOIA_LEVEL >= 3
             if (damaged) {
                 kill(0, SIGKILL);
@@ -247,6 +250,41 @@ class ExternalStackVerificator {
         pid_t external_verificator_pid;
 };
 
+class PointerManager {
+    public:
+        void Add(const void* pointer) {
+            pointers_.push_back(pointer);
+            Update();
+        }
+
+        void Delete(const void* pointer) {
+            auto iter = std::find(pointers_.begin(), pointers_.end(), pointer);
+            if (iter != pointers_.end()) {
+                std::swap(*iter, pointers_.back());
+                pointers_.pop_back();
+                Update();
+            }
+        }
+
+        bool Contains(const void* pointer) {
+            return std::find(pointers_.begin(), pointers_.end(), pointer) != pointers_.end();
+        }
+
+        bool Valid() const {
+            return external_verificator_.CheckBinary("data", pointers_.size() * sizeof(const void*), (const uint8_t *)(const void*)pointers_.data());
+        }
+
+        void Damage() {
+            external_verificator_.Damage();
+        }
+    private:
+        void Update() {
+            external_verificator_.SetBinary("data", pointers_.size() * sizeof(const void*), (const uint8_t *)(const void*)pointers_.data());
+        }
+        std::vector<const void*> pointers_;
+        ExternalVerificator external_verificator_;
+};
+
 template <class T>
 class IronStack {
 public:
@@ -281,9 +319,10 @@ public:
     }
 
     IronStack()
-        : canary_header_((AssertThisIsValid(), CanaryValue())),
+        : canary_header_((AssertThisIsValid(), AssertPointerIsFree(), CanaryValue())),
         size_(0), capacity_(0), buffer_(nullptr), hash_sum_(0),
         canary_footer_(CanaryValue()) {
+            pointer_manager_.Add(this);
             Resize(kMinimalStackCapacity);
             RecalcHashSum();
     }
@@ -298,6 +337,7 @@ public:
                 buffer_[i].~T();
             }
             std::free(GetFullBuffer());
+            pointer_manager_.Delete(this);
     }
 
     template <class U>
@@ -323,11 +363,10 @@ public:
         return buffer_[size_ - 1];
     }
 
-    void Pop() {
+    bool Pop() {
         ASSERT_OK
         if (size_ == 0) {
-            // Do nothing
-            return;
+            return false;
         }
         --size_;
         buffer_[size_].~T();
@@ -338,6 +377,7 @@ public:
         external_verificator_.SetObject("size", size_);
         RecalcHashSum();
         ASSERT_OK
+        return true;
     }
     bool IsEmpty() const {
         ASSERT_OK
@@ -464,14 +504,27 @@ private:
         external_verificator_.SetObject("capacity", capacity_);
     }
 
+    void EverythingIsBad(const char* msg = nullptr) const {
+        std::FILE* dump = GetDumpFile();
+        if (dump != nullptr) {
+            if (msg != nullptr) {
+                std::fprintf(dump, "ERROR: %s\n", msg);
+            }
+            Dump(dump);
+        }
+        std::exit(1);
+    }
+
     template <class This>
     void AssertIsValid(This pointer) const {
         if (!IsAValidPointer(pointer)) {
-            std::FILE* dump = GetDumpFile();
-            if (dump != nullptr) {
-                Dump(dump);
-            }
-            std::exit(1);
+            EverythingIsBad();
+        }
+    }
+
+    void AssertPointerIsFree() const {
+        if (pointer_manager_.Contains(this)) {
+            EverythingIsBad("This pointer is already in use");
         }
     }
 
@@ -539,8 +592,12 @@ private:
     int size_;
     int capacity_;
     T* buffer_;
-    ExternalStackVerificator external_verificator_;
+    ExternalVerificator external_verificator_;
     uint32_t hash_sum_;
     uint32_t buffer_hash_sum_;
     Canary canary_footer_;
+    static PointerManager pointer_manager_;
 };
+
+template <class T>
+PointerManager IronStack<T>::pointer_manager_;
