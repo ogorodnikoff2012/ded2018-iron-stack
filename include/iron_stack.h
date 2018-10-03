@@ -430,6 +430,10 @@ public:
             *trusted_reason = "BAD_EXTERNAL_STACK_TOP";
             return false;
         }
+        if (!pointer_manager_.Valid()) {
+            *trusted_reason = "BAD_POINTER_MANAGER";
+            return false;
+        }
         *trusted_reason = "OK";
         return true;
     }
