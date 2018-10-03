@@ -401,7 +401,9 @@ public:
         bool validator_verdict = Validate(&validator_reason);
         fprintf(file, "IronStack [%p] (Validator: %c %s) {", this, validator_verdict ? '+' : '-', validator_reason);
         if (IsAValidPointer(this)) {
-            fprintf(file, "\n\tcanary_header_: ");
+            fprintf(file, "\n\texpected canary: ");
+            DumpArray(file, CanaryValue().data(), sizeof(int), kCanarySize, 1);
+            fprintf(file, ",\n\tcanary_header_: ");
             DumpArray(file, canary_header_.data(), sizeof(int), kCanarySize, 1);
             ASSERT_CANARY(canary_header_);
 
@@ -505,7 +507,7 @@ private:
 
     uint32_t HashSum() const {
         Murmur3 generator(kHashSumSeed);
-        generator << canary_header_ << size_ << capacity_ << buffer_ << external_verificator_.InternalData() << canary_footer_;
+        generator << CanaryValue() << canary_header_ << size_ << capacity_ << buffer_ << external_verificator_.InternalData() << canary_footer_;
         return generator.GetHashSum();
     }
 
@@ -514,6 +516,7 @@ private:
             return kHashSumSeed;
         }
         Murmur3 generator(kHashSumSeed);
+        generator << CanaryValue();
         generator.Append(GetFullBuffer(), GetFullBufferSize(capacity_));
         return generator.GetHashSum();
 
