@@ -256,10 +256,13 @@ public:
     static constexpr int32_t kHashSumSeed = 0xABADBABE;
     static constexpr int kMinimalStackCapacity = 16;
     using Canary = std::array<int, kCanarySize>;
-    static constexpr Canary CanaryValue() {
+    Canary CanaryValue() const {
         Canary canary;
+        Murmur3 generator(kHashSumSeed);
+        generator << this;
+        uint32_t this_hash = generator.GetHashSum();
         /* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
-        uint32_t random_state = kCanaryRandomSeed;
+        uint32_t random_state = kCanaryRandomSeed ^ this_hash;
         for (int i = 0; i < kCanarySize; ++i) {
             canary[i] = random_state;
             random_state ^= (random_state << 13);
