@@ -26,10 +26,10 @@ static bool FindPageMode(const void* pointer, int* rights) {
         return false;
     }
     while (!feof(maps)) {
-        unsigned long long low, high;
+        uintptr_t low, high;
         char perms[6];
-        fscanf(maps, "%Lx-%Lx %s%*[^\n]\n", &low, &high, perms);
-        unsigned long long raw_pointer = (unsigned long long)(pointer);
+        fscanf(maps, "%lx-%lx %s%*[^\n]\n", &low, &high, perms);
+        uintptr_t raw_pointer = reinterpret_cast<uintptr_t>(pointer);
         if (low <= raw_pointer && raw_pointer <= high) {
             *rights = 0;
             if (perms[0] == 'r') {
@@ -183,12 +183,12 @@ class ExternalVerificator {
 
         template <class T>
         bool CheckObject(const char* name, const T& object) const {
-            return CheckBinary(name, sizeof(T), (uint8_t*)(void*)(&object));
+            return CheckBinary(name, sizeof(T), reinterpret_cast<uint8_t*>(&object));
         }
 
         template <class T>
         void SetObject(const char* name, const T& object) const {
-            SetBinary(name, sizeof(T), (uint8_t*)(void*)(&object));
+            SetBinary(name, sizeof(T), reinterpret_cast<uint8_t*>(&object));
         }
 
         void Dup(const char* name) const {
@@ -228,7 +228,7 @@ class ExternalVerificator {
         }
 
         const uint8_t* InternalData() const {
-            return (const uint8_t*)(void*)(in);
+            return reinterpret_cast<const uint8_t*>(in);
         }
 
         uint32_t InternalSize() const {
@@ -271,7 +271,7 @@ class PointerManager {
         }
 
         bool Valid() const {
-            return external_verificator_.CheckBinary("data", pointers_.size() * sizeof(const void*), (const uint8_t *)(const void*)pointers_.data());
+            return external_verificator_.CheckBinary("data", pointers_.size() * sizeof(const uint8_t*), reinterpret_cast<const uint8_t*>(pointers_.data()));
         }
 
         void Damage() {
@@ -279,7 +279,7 @@ class PointerManager {
         }
     private:
         void Update() {
-            external_verificator_.SetBinary("data", pointers_.size() * sizeof(const void*), (const uint8_t *)(const void*)pointers_.data());
+            external_verificator_.SetBinary("data", pointers_.size() * sizeof(const uint8_t*), reinterpret_cast<const uint8_t *>(pointers_.data()));
         }
         std::vector<const void*> pointers_;
         ExternalVerificator external_verificator_;
@@ -296,6 +296,8 @@ public:
 //    static constexpr int kPoisonValue = 0xFEE1DEAD;
     static constexpr int kCanaryRandomSeed = 0x8BADF00D;
     static constexpr int32_t kHashSumSeed = 0xABADBABE;
+    static constexpr int kStackExtendRatio = 2;
+    static constexpr int kStackShrinkRatio = 4;
     static constexpr int kMinimalStackCapacity = 16;
     using Canary = std::array<int, kCanarySize>;
     Canary CanaryValue() const {
@@ -348,7 +350,7 @@ public:
     void Push(U&& value) {
         ASSERT_OK
         if (size_ >= capacity_) {
-            Resize(2 * capacity_);
+            Resize(kStackExtendRatio * capacity_);
         }
         new (buffer_ + size_) T(std::forward<U>(value));
         external_verificator_.Dup("stack_top");
@@ -374,8 +376,8 @@ public:
         }
         --size_;
         buffer_[size_].~T();
-        if (capacity_ > kMinimalStackCapacity && 4 * size_ <= capacity_) {
-            Resize(capacity_ / 2);
+        if (capacity_ > kMinimalStackCapacity && kStackShrinkRatio * size_ <= capacity_) {
+            Resize(capacity_ / kStackExtendRatio);
         }
         external_verificator_.Pop("stack_top");
         external_verificator_.SetObject("size", size_);
@@ -459,8 +461,8 @@ public:
             fprintf(file, ",\n\tcapacity_: %d", capacity_);
             fprintf(file, ",\n\tbuffer_: (%p) ", buffer_);
 
-            Canary* buffer_header = (Canary*)(void*)GetFullBuffer();
-            Canary* buffer_footer = (Canary*)(void*)(GetFullBuffer() + sizeof(Canary) + sizeof(T) * capacity_);
+            Canary* buffer_header = reinterpret_cast<Canary*>(GetFullBuffer());
+            Canary* buffer_footer = reinterpret_cast<Canary*>(GetFullBuffer() + sizeof(Canary) + sizeof(T) * capacity_);
             fprintf(file, "\n\t\tbuffer_header: ");
             DumpArray(file, buffer_header->data(), sizeof(int), kCanarySize, 2);
             ASSERT_CANARY(*buffer_header);
@@ -488,11 +490,11 @@ public:
 private:
     void Resize(int new_capacity) {
         int new_full_size = GetFullBufferSize(new_capacity);
-        uint8_t* new_full_buffer = (uint8_t *)std::malloc(new_full_size);
+        uint8_t* new_full_buffer = reinterpret_cast<uint8_t *>(std::malloc(new_full_size));
 
-        Canary* header = (Canary*)(void*)(new_full_buffer);
-        T* new_buffer = (T*)(void*)(new_full_buffer + sizeof(Canary));
-        Canary* footer = (Canary*)(void*)(new_full_buffer + sizeof(Canary) + sizeof(T) * new_capacity);
+        Canary* header = reinterpret_cast<Canary*>(new_full_buffer);
+        T* new_buffer = reinterpret_cast<T*>(new_full_buffer + sizeof(Canary));
+        Canary* footer = reinterpret_cast<Canary*>(new_full_buffer + sizeof(Canary) + sizeof(T) * new_capacity);
 
         if (buffer_ != nullptr) {
             for (int i = 0; i < size_ && i < new_capacity; ++i) {
@@ -581,7 +583,7 @@ private:
     }
 
     uint8_t* GetFullBuffer() const {
-        return (uint8_t *)(void *)(buffer_) - sizeof(canary_header_);
+        return reinterpret_cast<uint8_t *>(buffer_) - sizeof(canary_header_);
     }
 
     uint32_t GetFullBufferSize(int capacity) const {
