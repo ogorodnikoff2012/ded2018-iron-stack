@@ -8,12 +8,12 @@ public:
 
     template <class T>
     Murmur3& operator<<(const T& data) {
-        uint8_t* array = (uint8_t*)(void*)(&data);
+        const uint8_t* array = reinterpret_cast<const uint8_t*>(&data);
         Append(array, sizeof(T));
         return *this;
     }
 
-    void Append(uint8_t* data, int size) {
+    void Append(const uint8_t* data, int size) {
         for (int i = 0; i < size; ++i) {
             AppendByte(data[i]);
         }

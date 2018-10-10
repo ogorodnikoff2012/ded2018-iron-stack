@@ -183,12 +183,12 @@ class ExternalVerificator {
 
         template <class T>
         bool CheckObject(const char* name, const T& object) const {
-            return CheckBinary(name, sizeof(T), reinterpret_cast<uint8_t*>(&object));
+            return CheckBinary(name, sizeof(T), reinterpret_cast<const uint8_t*>(&object));
         }
 
         template <class T>
         void SetObject(const char* name, const T& object) const {
-            SetBinary(name, sizeof(T), reinterpret_cast<uint8_t*>(&object));
+            SetBinary(name, sizeof(T), reinterpret_cast<const uint8_t*>(&object));
         }
 
         void Dup(const char* name) const {
@@ -531,7 +531,7 @@ private:
 
     void AssertPointerIsFree() const {
         if (pointer_manager_.Contains(this)) {
-            EverythingIsBad("This pointer is already in use");
+            EverythingIsBad("This pointer is already in use (two stacks are constructed at the same address)");
         }
     }
 
