@@ -92,16 +92,16 @@ class ExternalVerificator {
                 perror("pipe");
                 std::exit(1);
             }
-            in = fdopen(from_pipe[0], "r");
-            out = fdopen(to_pipe[1], "w");
+            in_ = fdopen(from_pipe[0], "r");
+            out_ = fdopen(to_pipe[1], "w");
 
-            external_verificator_pid = fork();
-            if (external_verificator_pid == -1) {
+            external_verificator_pid_ = fork();
+            if (external_verificator_pid_ == -1) {
                 perror("fork");
                 std::exit(1);
             }
 
-            if (external_verificator_pid == 0) {
+            if (external_verificator_pid_ == 0) {
                 dup2(to_pipe[0], STDIN_FILENO);
                 dup2(from_pipe[1], STDOUT_FILENO);
                 close(to_pipe[1]);
@@ -116,16 +116,16 @@ class ExternalVerificator {
             close(to_pipe[0]);
             close(from_pipe[1]);
             char buffer[10];
-            std::fscanf(in, "%5s", buffer);
-            std::fprintf(out, "ready\n");
-            std::fflush(out);
+            std::fscanf(in_, "%5s", buffer);
+            std::fprintf(out_, "ready\n");
+            std::fflush(out_);
 
             if (std::strcmp(buffer, "ready") != 0) {
                 fprintf(stderr, "Verificator `./verificator` is broken!\n");
                 std::exit(1);
             }
-            damaged = false;
 #endif
+            hash_sum_ = HashSum();
         }
 
         bool CheckBinary(const char* name, int expected_size, const uint8_t* expected_value) const {
@@ -133,19 +133,19 @@ class ExternalVerificator {
             if (!CheckName(name)) {
                 return false;
             }
-            std::fprintf(out, "get size %s\n", name);
-            std::fflush(out);
+            std::fprintf(out_, "get size %s\n", name);
+            std::fflush(out_);
             int64_t size;
-            std::fscanf(in, "%ld", &size);
+            std::fscanf(in_, "%ld", &size);
             if (size != expected_size) {
                 return false;
             }
 
             for (int i = 0; i < size; ++i) {
-                std::fprintf(out, "get at %d %s\n", i, name);
-                std::fflush(out);
+                std::fprintf(out_, "get at %d %s\n", i, name);
+                std::fflush(out_);
                 uint8_t element;
-                std::fscanf(in, "%hhu", &element);
+                std::fscanf(in_, "%hhu", &element);
                 if (element != expected_value[i]) {
                     return false;
                 }
@@ -157,9 +157,9 @@ class ExternalVerificator {
         void SetBinary(const char* name, int size, const uint8_t* value) const {
 #if PARANOIA_LEVEL >= 3
             if (CheckName(name)) {
-                std::fprintf(out, "set size %s %d\n", name, size);
+                std::fprintf(out_, "set size %s %d\n", name, size);
                 for (int i = 0; i < size; ++i) {
-                    std::fprintf(out, "set at %d %s %hhu\n", i, name, value[i]);
+                    std::fprintf(out_, "set at %d %s %hhu\n", i, name, value[i]);
                 }
             }
 #endif
@@ -178,7 +178,7 @@ class ExternalVerificator {
         void Dup(const char* name) const {
 #if PARANOIA_LEVEL >= 3
             if (CheckName(name)) {
-                std::fprintf(out, "dup %s\n", name);
+                std::fprintf(out_, "dup %s\n", name);
             }
 #endif
         }
@@ -186,33 +186,29 @@ class ExternalVerificator {
         void Pop(const char* name) const {
 #if PARANOIA_LEVEL >= 3
             if (CheckName(name)) {
-                std::fprintf(out, "pop %s\n", name);
+                std::fprintf(out_, "pop %s\n", name);
             }
 #endif
         }
 
         ~ExternalVerificator() {
 #if PARANOIA_LEVEL >= 3
-            if (damaged) {
+            if (HashSum() != hash_sum_) {
                 kill(0, SIGKILL);
                 while (wait(NULL) != -1) {}
             } else {
-                std::fprintf(out, "exit\n");
-                std::fflush(out);
-                std::fclose(in);
-                std::fclose(out);
-                kill(external_verificator_pid, SIGTERM);
-                while (waitpid(external_verificator_pid, NULL, 0) != -1) {}
+                std::fprintf(out_, "exit\n");
+                std::fflush(out_);
+                std::fclose(in_);
+                std::fclose(out_);
+                kill(external_verificator_pid_, SIGTERM);
+                while (waitpid(external_verificator_pid_, NULL, 0) != -1) {}
             }
 #endif
         }
 
-        void Damage() const {
-            damaged = true;
-        }
-
         const uint8_t* InternalData() const {
-            return reinterpret_cast<const uint8_t*>(&in);
+            return reinterpret_cast<const uint8_t*>(&in_);
         }
 
         uint32_t InternalSize() const {
@@ -228,10 +224,18 @@ class ExternalVerificator {
             }
             return true;
         }
-        mutable bool damaged;
-        FILE* in;
-        FILE* out;
-        pid_t external_verificator_pid;
+
+        uint32_t HashSum() const {
+            Murmur3 hasher(kHashSumSeed);
+            hasher.Append(InternalData(), InternalSize());
+            return hasher.GetHashSum();
+        }
+
+        static constexpr uint32_t kHashSumSeed = 0x1234ABCD;
+        mutable uint32_t hash_sum_;
+        FILE* in_;
+        FILE* out_;
+        pid_t external_verificator_pid_;
 };
 
 class PointerManager {
@@ -258,9 +262,6 @@ class PointerManager {
             return external_verificator_.CheckBinary("data", pointers_.size() * sizeof(const uint8_t*), reinterpret_cast<const uint8_t*>(pointers_.data()));
         }
 
-        void Damage() {
-            external_verificator_.Damage();
-        }
     private:
         void Update() {
             external_verificator_.SetBinary("data", pointers_.size() * sizeof(const uint8_t*), reinterpret_cast<const uint8_t *>(pointers_.data()));
@@ -275,9 +276,9 @@ protected:
 };
 
 #define EVERYTHING_IS_BAD(message) \
-    external_verificator_.Damage(); \
+/*    external_verificator_.Damage(); \
     pointer_manager_.Damage(); \
-    FILE* f = GetDumpFile(); \
+*/    FILE* f = GetDumpFile(); \
     std::fprintf(f, "Error in %s (%s:%d), validator message: %s\n", __PRETTY_FUNCTION__, __FILE__, __LINE__, message); \
     Dump(f); \
     std::exit(1); \
