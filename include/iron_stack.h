@@ -59,15 +59,15 @@ static bool CheckPointerRights(const void* pointer, int rights) {
     }
 #endif
 #endif
-    return pointer != nullptr;
+    return true;
 }
 
 static bool IsAValidPointer(const void* pointer) {
-    return CheckPointerRights(pointer, PM_READ);
+    return pointer != nullptr && CheckPointerRights(pointer, PM_READ);
 }
 
 static bool IsAValidPointer(void* pointer) {
-    return CheckPointerRights(pointer, PM_READ | PM_WRITE);
+    return pointer != nullptr && CheckPointerRights(pointer, PM_READ | PM_WRITE);
 }
 
 static std::FILE* GetDumpFile() {
@@ -77,22 +77,6 @@ static std::FILE* GetDumpFile() {
     }
 #endif
     return stderr;
-}
-
-#define EVERYTHING_IS_BAD(message) \
-    external_verificator_.Damage(); \
-    pointer_manager_.Damage(); \
-    FILE* f = GetDumpFile(); \
-    std::fprintf(f, "Error in %s (%s:%d), validator message: %s\n", __PRETTY_FUNCTION__, __FILE__, __LINE__, message); \
-    Dump(f); \
-    std::exit(1); \
-
-#define ASSERT_OK {\
-    const char* validator_reason = "OK"; \
-    bool validator_verdict = Validate(&validator_reason); \
-    if (!validator_verdict) { \
-        EVERYTHING_IS_BAD(validator_reason); \
-    } \
 }
 
 class ExternalVerificator {
@@ -228,11 +212,11 @@ class ExternalVerificator {
         }
 
         const uint8_t* InternalData() const {
-            return reinterpret_cast<const uint8_t*>(in);
+            return reinterpret_cast<const uint8_t*>(&in);
         }
 
         uint32_t InternalSize() const {
-            return sizeof(*this) - sizeof(damaged);
+            return sizeof(*this) - (InternalData() - reinterpret_cast<const uint8_t*>(this));
         }
 
     private:
@@ -285,33 +269,63 @@ class PointerManager {
         ExternalVerificator external_verificator_;
 };
 
-struct StackBase {
+class StackBase {
+protected:
     static PointerManager pointer_manager_;
+};
+
+#define EVERYTHING_IS_BAD(message) \
+    external_verificator_.Damage(); \
+    pointer_manager_.Damage(); \
+    FILE* f = GetDumpFile(); \
+    std::fprintf(f, "Error in %s (%s:%d), validator message: %s\n", __PRETTY_FUNCTION__, __FILE__, __LINE__, message); \
+    Dump(f); \
+    std::exit(1); \
+
+#define ASSERT_OK {\
+    const char* validator_reason = "OK"; \
+    bool validator_verdict = Validate(&validator_reason); \
+    if (!validator_verdict) { \
+        EVERYTHING_IS_BAD(validator_reason); \
+    } \
+}
+
+/* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
+class XorshiftRNG {
+public:
+    XorshiftRNG(uint32_t state) : state_(state) {
+    }
+    uint32_t next() {
+        uint32_t return_value = state_;
+        state_ ^= (state_ << 13);
+        state_ ^= (state_ >> 17);
+        state_ ^= (state_ << 5);
+        return return_value;
+    }
+private:
+    uint32_t state_;
 };
 
 template <class T>
 class IronStack : public StackBase {
 public:
     static constexpr int kCanarySize = 16;
-//    static constexpr int kPoisonValue = 0xFEE1DEAD;
+    static constexpr int kPoisonValue = 33; // Atomic number of arsenic :-) (0x21)
     static constexpr int kCanaryRandomSeed = 0x8BADF00D;
     static constexpr int32_t kHashSumSeed = 0xABADBABE;
     static constexpr int kStackExtendRatio = 2;
     static constexpr int kStackShrinkRatio = 4;
     static constexpr int kMinimalStackCapacity = 16;
+    static constexpr int kDumpMaxLineLength = 100;
     using Canary = std::array<int, kCanarySize>;
     Canary CanaryValue() const {
         Canary canary;
         Murmur3 generator(kHashSumSeed);
         generator << this;
         uint32_t this_hash = generator.GetHashSum();
-        /* Algorithm "xor" from p. 4 of Marsaglia, "Xorshift RNGs" */
-        uint32_t random_state = kCanaryRandomSeed ^ this_hash;
+        XorshiftRNG rnd(kCanaryRandomSeed ^ this_hash);
         for (int i = 0; i < kCanarySize; ++i) {
-            canary[i] = random_state;
-            random_state ^= (random_state << 13);
-            random_state ^= (random_state >> 17);
-            random_state ^= (random_state << 5);
+            canary[i] = rnd.next();
         }
         return canary;
     }
@@ -376,6 +390,7 @@ public:
         }
         --size_;
         buffer_[size_].~T();
+        std::memset(buffer_ + size_, kPoisonValue, sizeof(T));
         if (capacity_ > kMinimalStackCapacity && kStackShrinkRatio * size_ <= capacity_) {
             Resize(capacity_ / kStackExtendRatio);
         }
@@ -439,6 +454,7 @@ public:
         *trusted_reason = "OK";
         return true;
     }
+
     void Dump(std::FILE* file) const {
 #if PARANOIA_LEVEL >= 1
         if (fileno(file) == -1) {
@@ -451,50 +467,54 @@ public:
         bool validator_verdict = Validate(&validator_reason);
         fprintf(file, "IronStack [%p] (Validator: %c %s) {", this, validator_verdict ? '+' : '-', validator_reason);
         if (IsAValidPointer(this)) {
+            int indent_level = 1;
             fprintf(file, "\n\texpected canary: ");
-            DumpArray(file, CanaryValue().data(), sizeof(int), kCanarySize, 1);
+            DumpArray(file, CanaryValue().data(), kCanarySize, indent_level);
             fprintf(file, ",\n\tcanary_header_: ");
-            DumpArray(file, canary_header_.data(), sizeof(int), kCanarySize, 1);
+            DumpArray(file, canary_header_.data(), kCanarySize, indent_level);
             ASSERT_CANARY(canary_header_);
 
             fprintf(file, ",\n\tsize_: %d", size_);
             fprintf(file, ",\n\tcapacity_: %d", capacity_);
             fprintf(file, ",\n\tbuffer_: (%p) ", buffer_);
 
-            Canary* buffer_header = reinterpret_cast<Canary*>(GetFullBuffer());
-            Canary* buffer_footer = reinterpret_cast<Canary*>(GetFullBuffer() + sizeof(Canary) + sizeof(T) * capacity_);
+            Canary* buffer_header = GetFullBufferCanaryHeader(GetFullBuffer());
+            Canary* buffer_footer = GetFullBufferCanaryFooter(GetFullBuffer(), capacity_);
             fprintf(file, "\n\t\tbuffer_header: ");
-            DumpArray(file, buffer_header->data(), sizeof(int), kCanarySize, 2);
+            DumpArray(file, buffer_header->data(), kCanarySize, indent_level + 1);
             ASSERT_CANARY(*buffer_header);
 
-            fprintf(file, ",\n\t\tbuffer elements: ");
-            DumpArray(file, buffer_, sizeof(T), capacity_, 2);
+            fprintf(file, ",\n\t\tbuffer elements (only first size_ elements): ");
+            DumpArray(file, buffer_, size_, indent_level + 1);
 
+            fprintf(file, ",\n\t\tbuffer elements (dead objects between size_ and capacity_): ");
+            DumpArray(file, reinterpret_cast<std::array<uint8_t, sizeof(T)>*>(buffer_ + size_), capacity_ - size_, indent_level + 1);
 
             fprintf(file, ",\n\t\tbuffer_footer: ");
-            DumpArray(file, buffer_footer->data(), sizeof(int), kCanarySize, 2);
+            DumpArray(file, buffer_footer->data(), kCanarySize, indent_level + 1);
             ASSERT_CANARY(*buffer_footer);
 
             fprintf(file, ",\n\texternal_verificator: ");
-            DumpArray(file, external_verificator_.InternalData(), 1, external_verificator_.InternalSize(), 1);
+            DumpArray(file, external_verificator_.InternalData(), external_verificator_.InternalSize(), indent_level);
 
             fprintf(file, ",\n\thash: 0x%X", hash_sum_);
             fprintf(file, ",\n\tbuffer_hash: 0x%X", buffer_hash_sum_);
 
             fprintf(file, ",\n\tcanary_footer_: ");
-            DumpArray(file, canary_footer_.data(), sizeof(int), kCanarySize, 1);
+            DumpArray(file, canary_footer_.data(), kCanarySize, indent_level);
             ASSERT_CANARY(canary_footer_);
         }
         fprintf(file, "\n}\n");
+#undef ASSERT_CANARY
     }
 private:
     void Resize(int new_capacity) {
         int new_full_size = GetFullBufferSize(new_capacity);
         uint8_t* new_full_buffer = reinterpret_cast<uint8_t *>(std::malloc(new_full_size));
 
-        Canary* header = reinterpret_cast<Canary*>(new_full_buffer);
-        T* new_buffer = reinterpret_cast<T*>(new_full_buffer + sizeof(Canary));
-        Canary* footer = reinterpret_cast<Canary*>(new_full_buffer + sizeof(Canary) + sizeof(T) * new_capacity);
+        Canary* header = GetFullBufferCanaryHeader(new_full_buffer);
+        T* new_buffer = GetFullBufferInnerPart(new_full_buffer);
+        Canary* footer = GetFullBufferCanaryFooter(new_full_buffer, new_capacity);
 
         if (buffer_ != nullptr) {
             for (int i = 0; i < size_ && i < new_capacity; ++i) {
@@ -535,33 +555,27 @@ private:
         }
     }
 
-    static void NewLine(FILE* file, int indent) {
+    static void IndentedNewLine(std::FILE* file, int indent) {
         fputc('\n', file);
         for (int j = 0; j < indent; ++j) {
             fputc('\t', file);
         }
     }
 
-    static void DumpArray(FILE* file, const void* array, int size, int nmemb, int indent_size) {
-        int items_per_line = 80 / (size + 4);
-        if (items_per_line == 0) {
-            ++items_per_line;
-        }
+    template <class U>
+    static void DumpArray(std::FILE* file, const U* array, int nmemb, int indent_size) {
         fputc('{', file);
 
-        int index = items_per_line;
-        for (int i = 0; i < nmemb; ++i, ++index) {
-            if (index >= items_per_line) {
-                index = 0;
-                NewLine(file, indent_size + 1);
+        int written_chars = kDumpMaxLineLength; // We want to make new line before the first element
+        for (int i = 0; i < nmemb; ++i) {
+            if (written_chars >= kDumpMaxLineLength) {
+                written_chars = 0;
+                IndentedNewLine(file, indent_size + 1);
             }
-            fputs("0x", file);
-            for (int x = size - 1; x >= 0; --x) {
-                fprintf(file, "%02hhX", *((const char *)(array) + i * size + x));
-            }
-            fputs(", ", file);
+            written_chars += DumpObject(file, array + i);
+            written_chars += fprintf(file, ", ");
         }
-        NewLine(file, indent_size);
+        IndentedNewLine(file, indent_size);
         fputc('}', file);
     }
 
@@ -577,7 +591,12 @@ private:
         }
         Murmur3 generator(kHashSumSeed);
         generator << CanaryValue();
-        generator.Append(GetFullBuffer(), GetFullBufferSize(capacity_));
+        generator << *GetFullBufferCanaryHeader(GetFullBuffer());
+        for (int i = 0; i < size_; ++i) {
+            generator << buffer_[i];
+        }
+        generator.Append(reinterpret_cast<const uint8_t*>(buffer_ + size_), sizeof(T) * (capacity_ - size_));
+        generator << *GetFullBufferCanaryFooter(GetFullBuffer(), capacity_);
         return generator.GetHashSum();
 
     }
@@ -588,6 +607,18 @@ private:
 
     uint32_t GetFullBufferSize(int capacity) const {
         return sizeof(canary_header_) + sizeof(canary_footer_) + capacity * sizeof(T);
+    }
+
+    Canary* GetFullBufferCanaryHeader(uint8_t* buffer) const {
+        return reinterpret_cast<Canary*>(buffer);
+    }
+
+    T* GetFullBufferInnerPart(uint8_t* buffer) const {
+        return reinterpret_cast<T*>(buffer + sizeof(Canary));
+    }
+
+    Canary* GetFullBufferCanaryFooter(uint8_t* buffer, int capacity) const {
+        return reinterpret_cast<Canary*>(buffer + sizeof(Canary) + capacity * sizeof(T));
     }
 
     void RecalcHashSum() {
@@ -604,5 +635,17 @@ private:
     uint32_t buffer_hash_sum_;
     Canary canary_footer_;
 };
+
+template <class T>
+int DumpObject(std::FILE* file, const T* object, int object_size = sizeof(T)) {
+    int printed_chars = fprintf(file, "0x");
+    for (int x = object_size - 1; x >= 0; --x) {
+        printed_chars += fprintf(file, "%02hhX", *(reinterpret_cast<const uint8_t*>(object) + x));
+    }
+    return printed_chars;
+}
+
+#undef ASSERT_OK
+#undef EVERYTHING_IS_BAD
 
 PointerManager StackBase::pointer_manager_;

@@ -8,8 +8,7 @@ int main() {
         stack.Push(i);
     }
 
-    new (&stack) IronStack<double>;
-    stack.Push(0);
+    *(int*)(&stack) = 0;
 
     for (int i = 99; i >= 0; --i) {
         assert(stack.Top() == i);
