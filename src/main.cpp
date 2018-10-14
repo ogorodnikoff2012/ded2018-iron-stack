@@ -3,6 +3,8 @@
 #include <cassert>
 
 int main() {
+    using iron_stack::IronStack;
+
     IronStack<int> stack;
     for (int i = 0; i < 100; ++i) {
         stack.Push(i);
